@@ -9,6 +9,25 @@ import { parseStringPromise } from 'xml2js';
 import TurndownService from 'turndown';
 import * as yaml from 'js-yaml';
 
+// --- Script Configuration ---
+// Check for the --debug flag in the command-line arguments
+const isDebug = process.argv.includes('--debug');
+
+/**
+ * Logs messages to the console only if the --debug flag is present.
+ * @param message The message to log.
+ * @param data Optional data to log alongside the message.
+ */
+function logDebug(message: string, data?: any) {
+  if (isDebug) {
+    if (data) {
+      console.log(`[DEBUG] ${message}`, data);
+    } else {
+      console.log(`[DEBUG] ${message}`);
+    }
+  }
+}
+
 // Initialize the Turndown service to convert HTML to Markdown
 const turndownService = new TurndownService();
 
@@ -32,36 +51,49 @@ const toKebabCase = (str: string): string => {
  * @param xmlFilePath The path to the input WordPress XML file.
  */
 async function processWordPressXml(xmlFilePath: string) {
+  logDebug(`Starting processing for file: ${xmlFilePath}`);
   try {
     // Define the output directory
     const outputDir = path.join(path.dirname(xmlFilePath), 'markdown-posts');
+    logDebug(`Output directory set to: ${outputDir}`);
 
     // Create the output directory if it doesn't exist
     if (!fs.existsSync(outputDir)) {
-      // Use recursive true to handle any nested paths safely, though our sanitizing should prevent this.
+      logDebug('Output directory does not exist. Creating it...');
       fs.mkdirSync(outputDir, { recursive: true });
     }
 
     // Read the XML file
     const xmlData = fs.readFileSync(xmlFilePath, 'utf-8');
+    logDebug('Successfully read XML file.');
 
     // Parse the XML data into a JavaScript object
     const result = await parseStringPromise(xmlData);
     const posts = result.rss.channel[0].item;
+    logDebug(`Found ${posts.length} items in the XML file.`);
 
     // Process each post
     for (const post of posts) {
       // Skip posts that are not published (e.g., drafts, attachments)
       if (!post['wp:status'] || post['wp:status'][0] !== 'publish') {
+        logDebug(`Skipping post with status: ${post['wp:status'] ? post['wp:status'][0] : 'N/A'}`);
         continue;
       }
       
       const title = post.title[0] || 'untitled';
+      logDebug(`Processing post: "${title}"`);
+      logDebug('Full post object:', post);
+
       const pubDate = post['wp:post_date_gmt'][0];
       const modifiedDate = post['wp:post_modified_gmt'][0];
       const contentEncoded = post['content:encoded'][0];
       
-      // Extract categories (tags)
+      // Extract categories
+      const categories = post.category ? post.category
+        .filter((cat: any) => cat.$.domain === 'category')
+        .map((cat: any) => cat._) : [];
+
+      // Extract tags
       const tags = post.category ? post.category
         .filter((cat: any) => cat.$.domain === 'post_tag')
         .map((cat: any) => cat._) : [];
@@ -79,9 +111,15 @@ async function processWordPressXml(xmlFilePath: string) {
         metadata.updated = new Date(modifiedDate).toISOString();
       }
 
+      if (categories.length > 0) {
+        metadata.categories = categories;
+      }
+
       if (tags.length > 0) {
         metadata.tags = tags;
       }
+      
+      logDebug('Generated metadata:', metadata);
 
       // Convert metadata object to YAML string
       const yamlMetadata = yaml.dump(metadata);
@@ -103,18 +141,20 @@ async function processWordPressXml(xmlFilePath: string) {
 
   } catch (error) {
     console.error('An error occurred:', error);
+    logDebug('Full error object:', error);
   }
 }
 
 // --- Script Execution ---
 
-// Get the input file path from the command-line arguments
-const inputFile = process.argv[2];
+// Find the input file path, ignoring the --debug flag
+const inputFile = process.argv.find(arg => !arg.startsWith('--') && arg !== process.argv[1]);
+
 
 // Check if an input file was provided
 if (!inputFile) {
   console.error('Error: Please provide the path to the WordPress XML file as an argument.');
-  console.log('Usage: node dist/index.js <path-to-your-xml-file.xml>');
+  console.log('Usage: wp2md <path-to-your-xml-file.xml> [--debug]');
   process.exit(1); // Exit with an error code
 }
 
